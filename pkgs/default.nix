@@ -14997,6 +14997,51 @@ description = "Cardano SL - core";
 license = stdenv.lib.licenses.mit;
 
 }) {};
+"cardano-sl-core-test" = callPackage
+({
+  mkDerivation
+, base
+, bytestring
+, cardano-sl-core
+, cardano-sl-crypto
+, cardano-sl-crypto-test
+, cardano-sl-util
+, cpphs
+, cryptonite
+, formatting
+, hedgehog
+, mtl
+, stdenv
+, time-units
+, universum
+}:
+mkDerivation {
+
+pname = "cardano-sl-core-test";
+version = "1.1.0";
+src = ./../core/test;
+libraryHaskellDepends = [
+base
+bytestring
+cardano-sl-core
+cardano-sl-crypto
+cardano-sl-crypto-test
+cardano-sl-util
+cryptonite
+formatting
+hedgehog
+mtl
+time-units
+universum
+];
+libraryToolDepends = [
+cpphs
+];
+doHaddock = false;
+description = "Cardano SL - core functionalit (tests)";
+license = stdenv.lib.licenses.mit;
+
+}) {};
 "cardano-sl-crypto" = callPackage
 ({
   mkDerivation
