@@ -12,8 +12,6 @@ import           System.Wlog (Severity(Debug))
 
 import           Pos.Block.Types (Blund, Undo (..))
 
-import           Pos.Core (HasConfiguration)
-
 import qualified Cardano.Wallet.Kernel as Kernel
 import qualified Cardano.Wallet.Kernel.DB.HdWallet as HD
 import           Cardano.Wallet.Kernel.DB.Resolved (ResolvedBlock)
@@ -31,7 +29,7 @@ import           Pos.Crypto.Signing
 -- | Initialize the passive wallet.
 -- The passive wallet cannot send new transactions.
 bracketPassiveWallet
-    :: forall m n a. (MonadIO n, MonadIO m, MonadMask m, HasConfiguration)
+    :: forall m n a. (MonadIO n, MonadIO m, MonadMask m)
     => (Severity -> Text -> IO ())
     -> (PassiveWalletLayer n -> m a) -> m a
 bracketPassiveWallet logFunction f =
@@ -55,13 +53,15 @@ bracketPassiveWallet logFunction f =
             Right (esk, _keyPair) = safeKeysFromPhrase emptyPassphrase backup
             pk = error "TODO: need `AddressHash PublicKey` along with ESK to create a wallet"
 
-        Kernel.createWalletHdRnd w walletName (pk, esk) Map.empty
+        Kernel.createWalletHdRnd w walletName spendingPassword assuranceLevel (pk, esk) Map.empty
 
       f (passiveWalletLayer w invoke)
 
   where
-    -- TODO proper defaults
-    walletName  = HD.WalletName "(new wallet)"
+    -- TODO consider defaults
+    walletName       = HD.WalletName "(new wallet)"
+    spendingPassword = HD.NoSpendingPassword
+    assuranceLevel   = HD.AssuranceLevelNormal
 
     -- | TODO(ks): Currently not implemented!
     passiveWalletLayer _wallet invoke =

@@ -11,10 +11,7 @@ module Cardano.Wallet.Kernel (
     PassiveWallet -- opaque
   , WalletId
   , accountUtxo
-  , accountAvailable
-  , accountAvailableBalance
   , accountTotalBalance
-  , accountHasPending
   , applyBlock
   , applyBlocks
   , bracketPassiveWallet
@@ -46,7 +43,7 @@ import           Data.Acid.Advanced (query', update')
 
 import           Cardano.Wallet.Kernel.Diffusion (WalletDiffusion (..))
 import           Cardano.Wallet.Kernel.PrefilterTx (PrefilteredBlock (..)
-                                                  , utxoForAccount, prefilterUtxo, prefilterBlock)
+                                                  , prefilterUtxo, prefilterBlock)
 import           Cardano.Wallet.Kernel.Types(WalletId (..), WalletESKs, accountToWalletId)
 
 import           Cardano.Wallet.Kernel.DB.HdWallet
@@ -55,14 +52,14 @@ import           Cardano.Wallet.Kernel.DB.AcidState (DB, defDB
                                                    , CreateHdWallet (..)
                                                    , ApplyBlock (..)
                                                    , NewPending (..)
-                                                   , ReadHdAccount (..))
+                                                   , NewPendingError
+                                                   , ReadHdAccountUtxo (..)
+                                                   , ReadHdAccountTotalBalance (..))
 import           Cardano.Wallet.Kernel.DB.BlockMeta (BlockMeta (..))
-import           Cardano.Wallet.Kernel.DB.Spec as Spec
-import qualified Cardano.Wallet.Kernel.DB.Spec.Util as Spec
 import qualified Cardano.Wallet.Kernel.DB.HdWallet as HD
 import           Cardano.Wallet.Kernel.DB.InDb
 
-import           Pos.Core (HasConfiguration, Timestamp (..), TxAux (..), AddressHash, Coin, unsafeAddCoin, subCoin)
+import           Pos.Core (Timestamp (..), TxAux (..), AddressHash, Coin)
 
 import           Pos.Crypto (EncryptedSecretKey, PublicKey)
 import           Pos.Txp (Utxo)
@@ -149,22 +146,26 @@ init PassiveWallet{..} = _walletLogMessage Info "Passive Wallet kernel initializ
 
 -- | Creates an HD wallet with randomly generated addresses.
 --
--- Add an HdRoot and HdAccounts (which are discovered during prefiltering of utxo).
+-- Adds an HdRoot and HdAccounts (which are discovered during prefiltering of utxo).
 -- (In the case of empty utxo, no HdAccounts are created.)
 --
 -- The ESK is indexed by WalletId and added to the WalletESK map.
 createWalletHdRnd :: PassiveWallet
                   -> HD.WalletName
+                  -> HasSpendingPassword
+                  -> AssuranceLevel
                   -> (AddressHash PublicKey, EncryptedSecretKey)
                   -> Utxo
                   -> IO [HdAccountId]
-createWalletHdRnd pw@PassiveWallet{..} walletName  (pk, esk) utxo = do
+createWalletHdRnd pw@PassiveWallet{..} name spendingPassword assuranceLevel (pk,esk) utxo = do
     let utxoByAccount = prefilterUtxo rootId esk utxo
     created <- InDb <$> getCurrentTimestamp
 
-    res <- update' _wallets $ CreateHdWallet rootId walletName created utxoByAccount
+    res <- update' _wallets
+           $ CreateHdWallet rootId name spendingPassword assuranceLevel created utxoByAccount
     case res of
-        Left e' -> fail' e'
+        Left e' -> -- fails if the HdRootId already exists (see `CreateHdWalletError`)
+            fail' e'
         Right _ -> do
             insertWalletESK pw (WalletIdHdRnd rootId) esk
             return $ Map.keys utxoByAccount
@@ -182,8 +183,7 @@ getCurrentTimestamp = Timestamp . round . (* 1000) <$> getPOSIXTime
 
 -- | Prefilter the block for each esk in the `WalletESK` map.
 --   Return a unified Map of accountId and prefiltered blocks (representing multiple ESKs)
-prefilterBlock' :: HasConfiguration
-                => PassiveWallet
+prefilterBlock' :: PassiveWallet
                 -> ResolvedBlock
                 -> IO (Map HdAccountId PrefilteredBlock)
 prefilterBlock' pw b =
@@ -196,8 +196,7 @@ prefilterBlock' pw b =
         prefilterBlock_ (wid,esk) = prefilterBlock wid esk b
 
 -- | Notify all the wallets in the PassiveWallet of a new block
-applyBlock :: HasConfiguration
-           => PassiveWallet
+applyBlock :: PassiveWallet
            -> ResolvedBlock
            -> IO ()
 applyBlock pw@PassiveWallet{..} b
@@ -210,7 +209,9 @@ applyBlock pw@PassiveWallet{..} b
         void $ update' _wallets $ ApplyBlock (blocksByAccount, blockMeta)
 
 -- | Apply multiple blocks, one at a time, to all wallets in the PassiveWallet
-applyBlocks :: (Container (f ResolvedBlock), HasConfiguration)
+--
+--   TODO: this will be the responsibility of @matt-noonan's worker thread
+applyBlocks :: (Container (f ResolvedBlock))
               => PassiveWallet
               -> OldestFirst f ResolvedBlock
               -> IO ()
@@ -242,77 +243,27 @@ bracketActiveWallet walletPassive walletDiffusion =
       (return ActiveWallet{..})
       (\_ -> return ())
 
+-- | Submit a new pending transaction
+--
+-- Will fail if the HdAccountId does not exist or if some inputs of the
+-- new transaction are not available for spending.
+newPending :: ActiveWallet -> HdAccountId -> TxAux -> IO (Either NewPendingError ())
+newPending ActiveWallet{..} accountId tx
+  = update' (walletPassive ^. wallets) $ NewPending accountId (InDb tx)
+
 {-------------------------------------------------------------------------------
-  Active wallet API implementation
+  Wallet Account API
 -------------------------------------------------------------------------------}
 fail' :: (Buildable a, MonadFail m) => a -> m b
 fail' e' = fail . toString $ sformat build e'
 
-readHdAccount :: (MonadFail m, MonadIO m)
-              => AcidState DB -> HD.HdAccountId -> m HD.HdAccount
-readHdAccount db accountId = do
-    res <- query' db $ ReadHdAccount accountId
-    case res of
-        Left e -> fail' e
-        Right account -> return account
-
-readAccountCheckpoints :: PassiveWallet -> HdAccountId -> IO Checkpoints
-readAccountCheckpoints pw accountId
-    = do
-        account <- readHdAccount (pw ^. wallets) accountId
-        return $ account ^. HD.hdAccountCheckpoints
-
--- | Submit a new pending transaction
-newPending :: ActiveWallet -> HdAccountId -> TxAux -> IO Bool
-newPending ActiveWallet{..} accountId tx
-    = do
-        res <- update' (walletPassive ^. wallets) $ NewPending accountId (InDb tx)
-        case res of
-            Left _e -> return False -- error: UnknownHdAccount or NewPendingFailed
-            Right _ -> return True
-
 accountUtxo :: PassiveWallet -> HdAccountId -> IO Utxo
 accountUtxo pw accountId = do
-    checkpoints <- readAccountCheckpoints pw accountId
-    return $ checkpoints ^. Spec.currentUtxo
-
-accountAvailable :: PassiveWallet -> HdAccountId -> IO Utxo
-accountAvailable pw accountId = do
-    checkpoints <- readAccountCheckpoints pw accountId
-    return $ Spec.available (checkpoints ^. Spec.currentUtxo)
-                            (checkpoints ^. Spec.currentPendingTxs)
-
-accountChange :: PassiveWallet -> HdAccountId -> IO Utxo
-accountChange pw accountId = do
-    checkpoints <- readAccountCheckpoints pw accountId
-    let pending = checkpoints ^. Spec.currentPendingTxs
-
-    (Just esk) <- findWalletESK pw (accountToWalletId accountId)
-    return $ utxoForAccount accountId esk (Spec.pendingUtxo pending)
-
-accountAvailableBalance :: PassiveWallet -> HdAccountId -> IO Coin
-accountAvailableBalance pw accountId = do
-    checkpoints <- readAccountCheckpoints pw accountId
-    let utxoBalance  = checkpoints ^. Spec.currentUtxoBalance
-
-        utxo         = checkpoints ^. Spec.currentUtxo
-        pending      = checkpoints ^. Spec.currentPendingTxs
-        balanceDelta = Spec.balance $ Spec.utxoRestrictToInputs utxo (Spec.txIns pending)
-
-    case subCoin utxoBalance balanceDelta of
-        Just diff -> return diff
-        Nothing   -> error "Coin arithmetic error: subCoin utxoBalance balanceDelta"
+    res <- query' (pw ^. wallets) $ ReadHdAccountUtxo accountId
+    either fail' return res
 
 accountTotalBalance :: PassiveWallet -> HdAccountId -> IO Coin
 accountTotalBalance pw accountId = do
-    availableBalance <- accountAvailableBalance pw accountId
-    changeBalance    <- Spec.balance <$> accountChange pw accountId
-    return $ unsafeAddCoin availableBalance changeBalance
-
--- | Return True if there are pending transactions
-accountHasPending :: ActiveWallet -> HdAccountId -> IO Bool
-accountHasPending ActiveWallet{..} accountId = do
-    checkpoints <- readAccountCheckpoints walletPassive accountId
-    let pending = checkpoints ^. Spec.currentPendingTxs
-
-    return $ Map.size pending > 0
+    (Just esk) <- findWalletESK pw (accountToWalletId accountId)
+    res <- query' (pw ^. wallets) $ ReadHdAccountTotalBalance esk accountId
+    either fail' return res

@@ -41,6 +41,9 @@ data CreateHdAccountError =
     -- | The specified wallet could not be found
     CreateHdAccountUnknownRoot UnknownHdRoot
 
+    -- | Account already exists
+  | CreateHdAccountExists HdAccountId
+
 -- | Errors thrown by 'createHdAddress'
 data CreateHdAddressError =
     -- | Account not found
@@ -72,7 +75,7 @@ deriveSafeCopy 1 'base ''CreateHdWalletError
 -- some kind of secure key storage; here we ask for the hash of the public key
 -- only (i.e., a 'HdRootId'). It is the responsibility of the caller to use the
 -- 'BackupPhrase' and (optionally) the 'SpendingPassword' to create a new key
--- add it to the key storage. This is important, beacuse these are secret
+-- add it to the key storage. This is important, because these are secret
 -- bits of information that should never end up in the DB log.
 createHdRoot :: HdRootId
              -> WalletName
@@ -112,9 +115,8 @@ createHdAccount accountId checkpoint = do
 
     zoom hdWalletsAccounts $ do
         exists <- gets $ IxSet.member accountId
-        unless exists $ -- TODO add callback function for accountExists (to enable caller to throw Err)
-            at accountId .= Just hdAccount
-        return ()
+        when exists $ throwError $ CreateHdAccountExists accountId
+        at accountId .= Just hdAccount
   where
     rootId = accountId ^. hdAccountIdParent
     -- TODO consider proper AccountName default
@@ -167,6 +169,8 @@ instance Buildable CreateHdRootError where
 instance Buildable CreateHdAccountError where
     build (CreateHdAccountUnknownRoot (UnknownHdRoot rootId))
         = bprint ("CreateHdAccountError::CreateHdAccountUnknownRoot "%build) rootId
+    build (CreateHdAccountExists accountId)
+        = bprint ("CreateHdAccountError::CreateHdAccountExists "%build) accountId
 
 instance Buildable CreateHdWalletError where
     build = bprint ("CreateHdWalletError::"%build)

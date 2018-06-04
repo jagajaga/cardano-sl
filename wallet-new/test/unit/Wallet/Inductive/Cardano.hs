@@ -158,24 +158,27 @@ equivalentT activeWallet (pk,esk) = \mkWallet w ->
                 -> Utxo
                 -> TranslateT (EquivalenceViolation h) m HD.HdAccountId
     walletBootT ctxt utxo = do
-        accountIds <- liftIO $ Kernel.createWalletHdRnd passiveWallet walletName (pk,esk) utxo
+        accountIds <- liftIO $ Kernel.createWalletHdRnd passiveWallet walletName
+                                                        spendingPassword assuranceLevel
+                                                        (pk,esk) utxo
         let accountId = pickSingletonAccountId accountIds
 
         checkWalletState ctxt accountId >> return accountId
         where
-            walletName  = HD.WalletName "(test wallet)"
+            walletName       = HD.WalletName "(test wallet)"
+            spendingPassword = HD.NoSpendingPassword
+            assuranceLevel   = HD.AssuranceLevelNormal
 
-            -- The DSL Wallet does not model Account, a DSL Wallet is expressed
+            -- Since the DSL Wallet does not model Account, a DSL Wallet is expressed
             -- as a Cardano Wallet with exactly one Account.
             -- Here, we safely extract the AccountId.
             pickSingletonAccountId accountIds' =
                 case length accountIds' of
                     1 -> fromMaybe (error "Impossible!") (head accountIds')
                     0 -> error "ERROR: no accountIds generated for the given Utxo"
-                    _ -> error "ERROR: multiple AccountIds expected"
+                    _ -> error "ERROR: multiple AccountIds, only one expected"
 
-    walletApplyBlockT :: HasConfiguration
-                      => InductiveCtxt h
+    walletApplyBlockT :: InductiveCtxt h
                       -> HD.HdAccountId
                       -> RawResolvedBlock
                       -> TranslateT (EquivalenceViolation h) m ()

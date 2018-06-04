@@ -36,7 +36,7 @@ import           Cardano.Wallet.Kernel.DB.Util.AcidState
 -- | Errors thrown by 'newPending'
 data NewPendingFailed =
     -- | Some inputs are not in the wallet utxo
-    NewPendingInputsUnavailable (Set (Core.TxIn))
+    NewPendingInputsUnavailable (Set (InDb Core.TxIn))
 
 deriveSafeCopy 1 'base ''NewPendingFailed
 
@@ -72,7 +72,6 @@ newPending tx = do
         else
             inputUnavailableErr available'
 
-    return ()
     where
         tx' = tx ^. fromDb
 
@@ -82,7 +81,7 @@ newPending tx = do
 
         inputUnavailableErr available_ = do
             let unavailableInputs = txAuxInputSet tx' `Set.difference` utxoInputs available_
-            throwError $ NewPendingInputsUnavailable unavailableInputs
+            throwError $ NewPendingInputsUnavailable (Set.map InDb unavailableInputs)
 
 -- | Apply the prefiltered block to the specified wallet
 applyBlock :: (PrefilteredBlock, BlockMeta)

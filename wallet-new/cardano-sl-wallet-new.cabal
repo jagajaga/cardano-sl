@@ -72,6 +72,7 @@ library
                        Cardano.Wallet.Kernel.DB.InDb
                        Cardano.Wallet.Kernel.DB.Resolved
                        Cardano.Wallet.Kernel.DB.Spec
+                       Cardano.Wallet.Kernel.DB.Spec.Read
                        Cardano.Wallet.Kernel.DB.Spec.Update
                        Cardano.Wallet.Kernel.DB.Spec.Util
                        Cardano.Wallet.Kernel.DB.TxMeta
@@ -152,6 +153,7 @@ library
                      , reflection
                      , safe-exceptions
                      , safecopy
+                     , scrypt
                      , serokell-util
                      , servant
                      , servant-client

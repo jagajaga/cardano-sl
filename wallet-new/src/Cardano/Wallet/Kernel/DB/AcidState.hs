@@ -1,3 +1,4 @@
+{-# OPTIONS_GHC -fno-warn-orphans #-} -- to enable... deriveSafeCopy 1 'base ''EncryptedSecretKey
 {-# LANGUAGE RankNTypes      #-}
 {-# LANGUAGE TemplateHaskell #-}
 
@@ -26,8 +27,10 @@ module Cardano.Wallet.Kernel.DB.AcidState (
   , DeleteHdRoot(..)
   , DeleteHdAccount(..)
     -- *** READ
-  , ReadAccountsByRootId(..)
-  , ReadHdAccount (..)
+  , ReadHdAccountUtxo (..)
+  , ReadHdAccountTotalBalance (..)
+    -- * errors
+  , NewPendingError
   ) where
 
 import           Universum
@@ -39,6 +42,8 @@ import qualified Data.Map.Strict as Map
 import           Data.SafeCopy (base, deriveSafeCopy)
 
 import qualified Pos.Core as Core
+import           Pos.Crypto (EncryptedSecretKey)
+import           Crypto.Scrypt (EncryptedPass)
 import           Pos.Txp (Utxo)
 import           Pos.Util.Chrono (OldestFirst(..))
 
@@ -52,10 +57,11 @@ import qualified Cardano.Wallet.Kernel.DB.HdWallet.Update as HD
 import qualified Cardano.Wallet.Kernel.DB.HdWallet.Read as HD
 import           Cardano.Wallet.Kernel.DB.InDb
 import           Cardano.Wallet.Kernel.DB.Spec
+import qualified Cardano.Wallet.Kernel.DB.Spec.Read as Spec
 import qualified Cardano.Wallet.Kernel.DB.Spec.Util as Spec
 import qualified Cardano.Wallet.Kernel.DB.Spec.Update as Spec
 import           Cardano.Wallet.Kernel.DB.Util.AcidState
-import           Cardano.Wallet.Kernel.DB.Util.IxSet (IxSet)
+import qualified Cardano.Wallet.Kernel.DB.Util.IxSet as IxSet
 
 {-------------------------------------------------------------------------------
   Top-level database
@@ -120,24 +126,28 @@ newPending accountId tx = runUpdate' . zoom dbHdWallets $
 -- * Since a block may reference wallet accounts that do not exist yet locally,
 -- we need to create such 'missing' accounts. (An Account might not exist locally
 -- if it was created on another node instance of this wallet).
--- New Accounts are created with empty Utxo and a default name.
 applyBlock :: (Map HdAccountId PrefilteredBlock, BlockMeta) -> Update DB ()
 applyBlock (blocksByAccount,meta) = runUpdateNoErrors $
-    forM_ (Map.toList blocksByAccount) $ \(accountId,prefBlock) ->
-        zoom dbHdWallets $ do
-            createHdAccountIfNotExists accountId
+    zoom dbHdWallets $
+        forM_ (Map.toList blocksByAccount) $ \(accountId,prefBlock) -> do
+            mapUpdateErrors mustExist $
+                createHdAccountIfNotExists accountId initAccountUtxo
 
-            zoomHdAccountId voidErr accountId $
+            zoomHdAccountId mustExist accountId $
                 zoom hdAccountCheckpoints $
                     modify $ Spec.applyBlock (prefBlock,meta)
      where
+         -- Accounts are discovered during wallet creation (if the account was given
+         -- a balance in the genesis block) or during ApplyBlock, otherwise. For accounts
+         -- discovered during ApplyBlock, we can assume that there was no genesis utxo,
+         -- hence we use empty initial utxo for such new accounts.
          initAccountUtxo = Map.empty
 
-         createHdAccountIfNotExists accId =
-             mapUpdateErrors voidErr $ createHdAccount accId initAccountUtxo
-
-         voidErr :: forall a. a -> Void
-         voidErr _ = error "applyBlock CreateHdAccountError"
+         -- The call to `createHdAccountIfNotExists` may fail due to the parent HdRootId
+         -- of an HdAccountId not existing. When we `zoomHdAccountId` we can be sure that the
+         -- HdAccountId has been found or created.
+         mustExist :: forall a. a -> Void
+         mustExist _ = error "Failed to create an HdAccount due to UnknownHdAccountRoot"
 
 -- | Switch to a fork
 --
@@ -161,18 +171,18 @@ Wallet creation
 --  An HdAccount for each HdAccountId represented in 'utxoByAccount'.
 createHdWallet :: HdRootId
                -> WalletName
+               -> HasSpendingPassword
+               -> AssuranceLevel
                -> InDb Core.Timestamp
                -> Map HdAccountId Utxo
                -> Update DB (Either HD.CreateHdWalletError ())
-createHdWallet rootId name created utxoByAccount
+createHdWallet rootId name spendingPassword assuranceLevel created utxoByAccount
     = runUpdate' . zoom dbHdWallets $ do
-        -- TODO sensible defaults: SpendingPassword/AssuranceLevel
         mapUpdateErrors HD.CreateHdWalletRootFailed
             $ void
-            $ HD.createHdRoot rootId name NoSpendingPassword AssuranceLevelNormal created
+            $ HD.createHdRoot rootId name spendingPassword assuranceLevel created
         mapUpdateErrors HD.CreateHdWalletAccountFailed
             $ mapM_ (uncurry createHdAccount) $ Map.toList utxoByAccount
-        where
 
 -- | Create an HdAccount for the given HdAccountId and Utxo.
 --
@@ -189,8 +199,20 @@ createHdAccount accountId utxo = HD.createHdAccount accountId newCheckpoint
              , _checkpointUtxoBalance = InDb $ Spec.balance utxo
              , _checkpointExpected    = InDb Map.empty
              , _checkpointPending     = Pending . InDb $ Map.empty
+             -- TODO proper BlockMeta initialisation
              , _checkpointBlockMeta   = BlockMeta . InDb $ Map.empty
              }
+
+-- | Create an HdAccount if it does not already exist
+createHdAccountIfNotExists :: HdAccountId
+                           -> Utxo
+                           -> Update' HdWallets HD.CreateHdAccountError ()
+createHdAccountIfNotExists accId initUtxo = do
+    exists <- zoom hdWalletsAccounts $
+                  gets $ IxSet.member accId
+
+    unless exists $
+        createHdAccount accId initUtxo
 
 {-------------------------------------------------------------------------------
   Wrap HD C(R)UD operations
@@ -237,11 +259,26 @@ deleteHdAccount :: HdAccountId -> Update DB (Either UnknownHdRoot ())
 deleteHdAccount accId = runUpdate' . zoom dbHdWallets $
     HD.deleteHdAccount accId
 
-readAccountsByRootId :: HdRootId -> Query DB (Either UnknownHdRoot (IxSet HdAccount))
-readAccountsByRootId rootId = HD.readAccountsByRootId rootId . _dbHdWallets <$> ask
+{-------------------------------------------------------------------------------
+  Read-only functions on account
+-------------------------------------------------------------------------------}
 
-readHdAccount :: HdAccountId -> Query DB (Either UnknownHdAccount HdAccount)
-readHdAccount accountId = HD.readHdAccount accountId . _dbHdWallets <$> ask
+-- | Read the HdAccount and apply f to the current checkpoint of the account
+readHdAccount' :: forall a.
+                  (Checkpoint -> a)
+               -> HdAccountId
+               -> Query DB (Either UnknownHdAccount a)
+readHdAccount' f accountId = do
+    checkpoints <- readHdAccountCheckpoints . _dbHdWallets <$> ask
+    return $ f . view currentCheckpoint <$> checkpoints
+    where
+        readHdAccountCheckpoints = fmap _hdAccountCheckpoints . HD.readHdAccount accountId
+
+readHdAccountUtxo :: HdAccountId -> Query DB (Either UnknownHdAccount Utxo)
+readHdAccountUtxo = readHdAccount' Spec.accountUtxo
+
+readHdAccountTotalBalance :: EncryptedSecretKey -> HdAccountId -> Query DB (Either UnknownHdAccount Core.Coin)
+readHdAccountTotalBalance esk accountId = readHdAccount' (Spec.accountTotalBalance esk accountId) accountId
 
 {-------------------------------------------------------------------------------
   Acid-state magic
@@ -249,6 +286,10 @@ readHdAccount accountId = HD.readHdAccount accountId . _dbHdWallets <$> ask
 
 snapshot :: Query DB DB
 snapshot = ask
+
+-- TODO re-consider this
+deriveSafeCopy 1 'base ''EncryptedPass
+deriveSafeCopy 1 'base ''EncryptedSecretKey
 
 makeAcidic ''DB [
       -- Database snapshot
@@ -266,6 +307,7 @@ makeAcidic ''DB [
     , 'updateHdAccountName
     , 'deleteHdRoot
     , 'deleteHdAccount
-    , 'readAccountsByRootId
-    , 'readHdAccount
+      -- Reads on HD wallet accounts
+    , 'readHdAccountTotalBalance
+    , 'readHdAccountUtxo
     ]

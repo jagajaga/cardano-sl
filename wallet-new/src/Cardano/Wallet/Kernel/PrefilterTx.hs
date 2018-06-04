@@ -19,7 +19,7 @@ import           Serokell.Util (listJson, mapJson)
 
 import           Data.SafeCopy (base, deriveSafeCopy)
 
-import           Pos.Core (Address (..), HasConfiguration)
+import           Pos.Core (Address (..))
 import           Pos.Core.Txp (TxIn (..), TxOut (..), TxOutAux (..))
 import           Pos.Crypto (EncryptedSecretKey)
 import           Pos.Txp.Toil.Types (Utxo)
@@ -56,8 +56,7 @@ type WalletKey = (WalletId, WalletDecrCredentials)
 -- | Prefilter the transactions of a resolved block for the given wallet.
 --
 --   Returns prefiltered blocks indexed by HdAccountId.
-prefilterBlock :: HasConfiguration
-               => WalletId
+prefilterBlock :: WalletId
                -> EncryptedSecretKey
                -> ResolvedBlock
                -> Map HdAccountId PrefilteredBlock
@@ -138,6 +137,11 @@ ourResolvedTxPairs wid xs = map f $ ours wid selectAddr xs
 
 -- | Filter items by filtering for 'our' addresses. Returns matches, along
 --   with the HdAccountId discovered for the matching item
+--
+-- TODO: `selectOwnAddresses` calls `decryptAddress`, which extracts
+--       the AccountId from the Tx Attributes. This is not sufficient since it
+--       doesn't actually _verify_ that the Tx belongs to the AccountId.
+--       We need to add verification (see `deriveLvl2KeyPair`).
 ours :: WalletKey
      -> (a -> Address)      -- ^ address getter
      -> [a]                 -- ^ list to filter
