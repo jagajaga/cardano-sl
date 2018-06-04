@@ -48,16 +48,18 @@ import           Cardano.Wallet.Kernel.Types(WalletId (..), WalletESKs, accountT
 
 import           Cardano.Wallet.Kernel.DB.HdWallet
 import           Cardano.Wallet.Kernel.DB.Resolved (ResolvedBlock)
-import           Cardano.Wallet.Kernel.DB.AcidState (DB, defDB
+import           Cardano.Wallet.Kernel.DB.AcidState (DB, defDB, dbHdWallets
                                                    , CreateHdWallet (..)
                                                    , ApplyBlock (..)
                                                    , NewPending (..)
                                                    , NewPendingError
-                                                   , ReadHdAccountUtxo (..)
-                                                   , ReadHdAccountTotalBalance (..))
+                                                   , Snapshot (..))
 import           Cardano.Wallet.Kernel.DB.BlockMeta (BlockMeta (..))
 import qualified Cardano.Wallet.Kernel.DB.HdWallet as HD
+import qualified Cardano.Wallet.Kernel.DB.HdWallet.Read as HD
 import           Cardano.Wallet.Kernel.DB.InDb
+import           Cardano.Wallet.Kernel.DB.Spec as Spec
+import qualified Cardano.Wallet.Kernel.DB.Spec.Read as Spec
 
 import           Pos.Core (Timestamp (..), TxAux (..), AddressHash, Coin)
 
@@ -139,6 +141,9 @@ initPassiveWallet logMessage db = do
 -- called when the node is initialized (when run in the node proper).
 init :: PassiveWallet -> IO ()
 init PassiveWallet{..} = _walletLogMessage Info "Passive Wallet kernel initialized"
+
+fail' :: (Buildable a, MonadFail m) => a -> m b
+fail' e' = fail . toString $ sformat build e'
 
 {-------------------------------------------------------------------------------
   Wallet Creation
@@ -254,16 +259,23 @@ newPending ActiveWallet{..} accountId tx
 {-------------------------------------------------------------------------------
   Wallet Account API
 -------------------------------------------------------------------------------}
-fail' :: (Buildable a, MonadFail m) => a -> m b
-fail' e' = fail . toString $ sformat build e'
+
+-- | Get the current checkpoint for an accountId from a database Snapshot, then
+--   apply the given pure function to the checkpoint
+accountQuery :: forall a. PassiveWallet -> HdAccountId -> (Checkpoint -> a) -> IO a
+accountQuery pw accountId f = do
+    db <- query' (pw ^. wallets) Snapshot
+    let checkpoint = readHdAccountCheckpoint $ db ^. dbHdWallets
+    either fail' (return . f) checkpoint
+    where
+        readHdAccountCheckpoint :: HdWallets -> Either UnknownHdAccount Checkpoint
+        readHdAccountCheckpoint = fmap (view Spec.currentCheckpoint . _hdAccountCheckpoints) . HD.readHdAccount accountId
 
 accountUtxo :: PassiveWallet -> HdAccountId -> IO Utxo
-accountUtxo pw accountId = do
-    res <- query' (pw ^. wallets) $ ReadHdAccountUtxo accountId
-    either fail' return res
+accountUtxo pw accountId =
+    accountQuery pw accountId Spec.accountUtxo
 
 accountTotalBalance :: PassiveWallet -> HdAccountId -> IO Coin
 accountTotalBalance pw accountId = do
     (Just esk) <- findWalletESK pw (accountToWalletId accountId)
-    res <- query' (pw ^. wallets) $ ReadHdAccountTotalBalance esk accountId
-    either fail' return res
+    accountQuery pw accountId (Spec.accountTotalBalance esk accountId)

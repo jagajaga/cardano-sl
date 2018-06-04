@@ -153,7 +153,6 @@ library
                      , reflection
                      , safe-exceptions
                      , safecopy
-                     , scrypt
                      , serokell-util
                      , servant
                      , servant-client

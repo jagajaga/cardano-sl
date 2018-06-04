@@ -47,14 +47,14 @@ accountAvailableBalance c =
 -- | Account Change refers to any pending outputs paid back into the
 --   account (represented by the given checkpoint).
 --
--- NOTE: computing 'change' requires prefiltering
+-- NOTE: computing 'change' requires selecting "our" addresses
 accountChange :: (Utxo -> Utxo) -> Checkpoint -> Utxo
 accountChange ourUtxo
     = ourUtxo . pendingUtxo . accountPendingTxs
 
 -- | The Account Total Balance is the 'available' balance plus any 'change'
 --
--- NOTE: computing 'total balance' requires prefiltering, which requires
+-- NOTE: computing 'total balance' requires filtering "our" addresses, which requires
 --       the wallet ESK and HdAccountId.
 accountTotalBalance :: EncryptedSecretKey -> HdAccountId -> Checkpoint -> Core.Coin
 accountTotalBalance esk accountId c

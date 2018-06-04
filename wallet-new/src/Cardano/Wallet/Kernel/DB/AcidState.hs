@@ -26,9 +26,6 @@ module Cardano.Wallet.Kernel.DB.AcidState (
     -- *** DELETE
   , DeleteHdRoot(..)
   , DeleteHdAccount(..)
-    -- *** READ
-  , ReadHdAccountUtxo (..)
-  , ReadHdAccountTotalBalance (..)
     -- * errors
   , NewPendingError
   ) where
@@ -42,8 +39,6 @@ import qualified Data.Map.Strict as Map
 import           Data.SafeCopy (base, deriveSafeCopy)
 
 import qualified Pos.Core as Core
-import           Pos.Crypto (EncryptedSecretKey)
-import           Crypto.Scrypt (EncryptedPass)
 import           Pos.Txp (Utxo)
 import           Pos.Util.Chrono (OldestFirst(..))
 
@@ -54,10 +49,8 @@ import           Cardano.Wallet.Kernel.DB.HdWallet
 import qualified Cardano.Wallet.Kernel.DB.HdWallet.Create as HD
 import qualified Cardano.Wallet.Kernel.DB.HdWallet.Delete as HD
 import qualified Cardano.Wallet.Kernel.DB.HdWallet.Update as HD
-import qualified Cardano.Wallet.Kernel.DB.HdWallet.Read as HD
 import           Cardano.Wallet.Kernel.DB.InDb
 import           Cardano.Wallet.Kernel.DB.Spec
-import qualified Cardano.Wallet.Kernel.DB.Spec.Read as Spec
 import qualified Cardano.Wallet.Kernel.DB.Spec.Util as Spec
 import qualified Cardano.Wallet.Kernel.DB.Spec.Update as Spec
 import           Cardano.Wallet.Kernel.DB.Util.AcidState
@@ -260,36 +253,11 @@ deleteHdAccount accId = runUpdate' . zoom dbHdWallets $
     HD.deleteHdAccount accId
 
 {-------------------------------------------------------------------------------
-  Read-only functions on account
--------------------------------------------------------------------------------}
-
--- | Read the HdAccount and apply f to the current checkpoint of the account
-readHdAccount' :: forall a.
-                  (Checkpoint -> a)
-               -> HdAccountId
-               -> Query DB (Either UnknownHdAccount a)
-readHdAccount' f accountId = do
-    checkpoints <- readHdAccountCheckpoints . _dbHdWallets <$> ask
-    return $ f . view currentCheckpoint <$> checkpoints
-    where
-        readHdAccountCheckpoints = fmap _hdAccountCheckpoints . HD.readHdAccount accountId
-
-readHdAccountUtxo :: HdAccountId -> Query DB (Either UnknownHdAccount Utxo)
-readHdAccountUtxo = readHdAccount' Spec.accountUtxo
-
-readHdAccountTotalBalance :: EncryptedSecretKey -> HdAccountId -> Query DB (Either UnknownHdAccount Core.Coin)
-readHdAccountTotalBalance esk accountId = readHdAccount' (Spec.accountTotalBalance esk accountId) accountId
-
-{-------------------------------------------------------------------------------
   Acid-state magic
 -------------------------------------------------------------------------------}
 
 snapshot :: Query DB DB
 snapshot = ask
-
--- TODO re-consider this
-deriveSafeCopy 1 'base ''EncryptedPass
-deriveSafeCopy 1 'base ''EncryptedSecretKey
 
 makeAcidic ''DB [
       -- Database snapshot
@@ -307,7 +275,4 @@ makeAcidic ''DB [
     , 'updateHdAccountName
     , 'deleteHdRoot
     , 'deleteHdAccount
-      -- Reads on HD wallet accounts
-    , 'readHdAccountTotalBalance
-    , 'readHdAccountUtxo
     ]
