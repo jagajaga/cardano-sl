@@ -47,16 +47,15 @@ import           Pos.Infra.DHT.Real (KademliaParams (..))
 import           Pos.Infra.Network.Types (NetworkConfig (..))
 import           Pos.Infra.Reporting (initializeMisbehaviorMetrics)
 import           Pos.Infra.Shutdown.Types (ShutdownContext (..))
-import           Pos.Infra.Slotting (SimpleSlottingStateVar,
-                                     mkSimpleSlottingStateVar)
+import           Pos.Infra.Slotting (SimpleSlottingStateVar, mkSimpleSlottingStateVar)
 import           Pos.Infra.Slotting.Types (SlottingData)
 import           Pos.Infra.StateLock (newStateLock)
+import           Pos.Infra.Util.JsonLog.Events (JsonLogConfig (..), jsonLogConfigFromHandle)
 import           Pos.Launcher.Param (BaseParams (..), LoggingParams (..), NodeParams (..))
 import           Pos.Lrc.Context (LrcContext (..), mkLrcSyncData)
 import           Pos.Ssc (SscParams, SscState, createSscContext, mkSscState)
 import           Pos.Txp (GenericTxpLocalData (..), TxpGlobalSettings, mkTxpLocalData,
                           recordTxpMetrics)
-import           Pos.Util.JsonLog.Events (JsonLogConfig (..), jsonLogConfigFromHandle)
 
 import           Pos.Launcher.Mode (InitMode, InitModeContext (..), runInitMode)
 import           Pos.Update.Context (mkUpdateContext)
@@ -156,7 +155,7 @@ allocateNodeResources np@NodeParams {..} sscnp txpSettings initDB = do
                 Nothing -> pure Nothing
                 Just fp -> do
                     h <- openFile fp WriteMode
-                    liftIO $ hSetBuffering h NoBuffering
+                    liftIO $ hSetBuffering h LineBuffering
                     return $ Just h
         jsonLogConfig <- maybe
             (pure JsonLogDisabled)
